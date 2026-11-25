@@ -3,9 +3,9 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: GitHub environment for secrets and deployment approval (production or preview).
+        description: Optional GitHub environment; empty runs without an environment (GitHub Free private repos).
         type: string
-        required: true
+        default: ''
       wrangler-environment:
         description: Optional named Wrangler environment; empty uses the top-level configuration.
         type: string
@@ -36,7 +36,44 @@ concurrency:
 jobs:
   deploy:
     # Never expose deployment credentials to fork pull requests.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: inputs.environment == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      url: ${{ steps.wrangler.outputs.deployment-url }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Bun
+        uses: favouranifowose/.github/actions/setup-bun@v1
+        with:
+          bun-version: ${{ inputs.bun-version }}
+          registry-token: ${{ github.token }}
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build
+        run: bun run build
+      - name: Upload or deploy Worker
+        id: wrangler
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ inputs.working-directory }}
+          environment: ${{ inputs.wrangler-environment }}
+          packageManager: bun
+          command: ${{ inputs.preview && 'versions upload' || 'deploy' }}
+  deploy-with-environment:
+    # Never expose deployment credentials to fork pull requests.
+    if: inputs.environment != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -76,8 +113,10 @@ jobs:
           packageManager: bun
           command: ${{ inputs.preview && 'versions upload' || 'deploy' }}
   comment:
-    needs: deploy
-    if: inputs.preview && github.event_name == 'pull_request'
+    needs: [deploy, deploy-with-environment]
+    if: >-
+      !cancelled() && inputs.preview && github.event_name == 'pull_request' &&
+      (needs.deploy.result == 'success' || needs.deploy-with-environment.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -86,7 +125,7 @@ jobs:
       - name: Update preview comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          PREVIEW_URL: ${{ needs.deploy.outputs.url }}
+          PREVIEW_URL: ${{ needs.deploy.outputs.url || needs.deploy-with-environment.outputs.url }}
           PREVIEW_KEY: ${{ inputs.environment }}:${{ inputs.working-directory }}
         with:
           script: |
