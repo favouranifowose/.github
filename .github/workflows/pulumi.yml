@@ -3,7 +3,7 @@ on:
   workflow_call:
     inputs:
       command:
-        description: Only preview or up is accepted; up requires an environment.
+        description: Only preview or up is accepted.
         type: string
         required: true
       stack:
@@ -15,7 +15,7 @@ on:
         type: string
         default: '.'
       environment:
-        description: GitHub environment; required for up, defaults to preview for preview.
+        description: Optional GitHub environment; empty runs without an environment (GitHub Free private repos).
         type: string
         default: ''
     secrets:
@@ -41,26 +41,80 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Validate command and approval environment
+      - name: Validate command
         env:
           COMMAND: ${{ inputs.command }}
-          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           case "$COMMAND" in
-            preview) ;;
-            up) test -n "${ENVIRONMENT//[[:space:]]/}" || { echo 'up requires an environment'; exit 1; } ;;
+            preview|up) ;;
             *) echo 'command must be preview or up'; exit 1 ;;
           esac
   preview:
     needs: validate
-    if: inputs.command == 'preview' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: inputs.environment == '' && (inputs.command == 'preview' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       packages: read
       pull-requests: write
-    environment: ${{ inputs.environment || 'preview' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Bun
+        uses: favouranifowose/.github/actions/setup-bun@v1
+        with:
+          registry-token: ${{ github.token }}
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: bun install --frozen-lockfile
+      - name: Validate App credentials
+        id: credentials
+        env:
+          APP_ID: ${{ secrets.GH_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$APP_ID" && -z "$APP_PRIVATE_KEY" || -z "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo 'GH_APP_ID and GH_APP_PRIVATE_KEY must be provided together'
+            exit 1
+          fi
+          if [[ -n "$APP_ID" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create GitHub provider token
+        id: app-token
+        if: steps.credentials.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: write
+      - name: Run Pulumi
+        uses: pulumi/actions@0ce33695f880624d4f27bd6db25e680c7df4d551 # v7.2.0
+        with:
+          command: ${{ inputs.command }}
+          stack-name: ${{ inputs.stack }}
+          work-dir: ${{ inputs.working-directory }}
+          comment-on-pr: ${{ inputs.command == 'preview' }}
+          github-token: ${{ github.token }}
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+  preview-with-environment:
+    needs: validate
+    if: inputs.environment != '' && (inputs.command == 'preview' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: write
+    environment: ${{ inputs.environment }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,7 +164,62 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
   up:
     needs: validate
-    if: inputs.command == 'up' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: inputs.environment == '' && (inputs.command == 'up' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Bun
+        uses: favouranifowose/.github/actions/setup-bun@v1
+        with:
+          registry-token: ${{ github.token }}
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: bun install --frozen-lockfile
+      - name: Validate App credentials
+        id: credentials
+        env:
+          APP_ID: ${{ secrets.GH_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$APP_ID" && -z "$APP_PRIVATE_KEY" || -z "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo 'GH_APP_ID and GH_APP_PRIVATE_KEY must be provided together'
+            exit 1
+          fi
+          if [[ -n "$APP_ID" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create GitHub provider token
+        id: app-token
+        if: steps.credentials.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: write
+      - name: Run Pulumi
+        uses: pulumi/actions@0ce33695f880624d4f27bd6db25e680c7df4d551 # v7.2.0
+        with:
+          command: ${{ inputs.command }}
+          stack-name: ${{ inputs.stack }}
+          work-dir: ${{ inputs.working-directory }}
+          comment-on-pr: ${{ inputs.command == 'preview' }}
+          github-token: ${{ github.token }}
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+  up-with-environment:
+    needs: validate
+    if: inputs.environment != '' && (inputs.command == 'up' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

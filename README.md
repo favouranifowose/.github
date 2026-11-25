@@ -2,6 +2,8 @@
 
 Reusable CI/CD and organization defaults for `favouranifowose`. App repositories use Bun, SvelteKit on Cloudflare Workers, Convex backends, and Pulumi TypeScript infrastructure. Pulumi manages Cloudflare/GitHub infrastructure (domains, scoped tokens, rulesets); Wrangler uploads Worker code. Convex deployment is outside these workflows.
 
+Private app repositories use GitHub Free with no environment approval gates. Agents may push directly to `main`; pipelines check the code, apply infrastructure, and deploy Worker code from `main`. PRs are optional and can provide previews before a change lands.
+
 | Workflow | Behavior | GitHub token permissions |
 | --- | --- | --- |
 | `ci.yml` | Frozen install, `check`, `test`, optional `build` | `contents: read`, `packages: read` |
@@ -28,7 +30,7 @@ No additional secrets required: installs authenticate to GitHub Packages with th
 
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `environment` | string | required | GitHub environment for secrets and approval |
+| `environment` | string | empty | Optional GitHub environment; omit on GitHub Free private repositories |
 | `wrangler-environment` | string | empty | Optional Wrangler `--env`; empty uses the top-level Wrangler configuration |
 | `preview` | boolean | `false` | Upload a version without switching active traffic |
 | `working-directory` | string | `.` | App and Wrangler configuration directory |
@@ -41,7 +43,9 @@ No additional secrets required: installs authenticate to GitHub Packages with th
 
 Use `@sveltejs/adapter-cloudflare` and commit Wrangler as a dev dependency with the lockfile. The GitHub `environment` does not select a Wrangler environment: leave `wrangler-environment` empty for apps with only a top-level `wrangler.jsonc`. Set it explicitly only when the app defines a matching named Wrangler environment. Enable `workers_dev` and `preview_urls` for version previews and ensure required bindings exist before uploading versions. The Wrangler action uses the installed Wrangler version; use Wrangler 3.88.0 or later so `versions upload` returns a structured preview URL. In pinned wrangler-action v4.1.3, `versions upload` exposes its `preview_url` as **`deployment-url`**, which feeds the GitHub environment URL and sticky PR comment; `preview-url` is for the separate `wrangler preview` command. See the pinned [action metadata](https://github.com/cloudflare/wrangler-action/blob/953926a2e2182532811c01a25e53647d93bf07c0/action.yml) and [version upload output handler](https://github.com/cloudflare/wrangler-action/blob/953926a2e2182532811c01a25e53647d93bf07c0/src/commandOutputParsing.ts). The comment job fails clearly if a Workers preview URL is missing.
 
-When used, named Wrangler environments must include their own bindings where Wrangler does not inherit them. Match Worker names, routes and bindings to the infrastructure owned by Pulumi. The SvelteKit build must produce the configured entry point/assets. A version preview uploads without switching active traffic, but uses existing resources and may write to its bound databases or services; select an isolated preview Worker/bindings when that matters. Environment secrets override explicitly passed secrets of the same name. Worker and Pulumi installs use the same GitHub Packages authentication as CI.
+When used, named Wrangler environments must include their own bindings where Wrangler does not inherit them. Match Worker names, routes and bindings to the infrastructure owned by Pulumi. The SvelteKit build must produce the configured entry point/assets. A version preview uploads without switching active traffic, but uses existing resources and may write to its bound databases or services; select an isolated preview Worker/bindings when that matters. Worker and Pulumi installs use the same GitHub Packages authentication as CI.
+
+Leave `environment` empty for the default delivery model and keep credentials in repository secrets. The workflows select separate jobs with no `environment` key when this input is empty. [GitHub documents environment references by name](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idenvironment), without guaranteeing that an empty name disables the reference; it also [requires a paid plan for environments in private repositories](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments). Explicitly setting a nonempty input opts into a GitHub environment on repositories whose plan supports it; that environment's configured rules and secrets then apply. `wrangler-environment` remains independent.
 
 ### `pulumi.yml`
 
@@ -50,7 +54,7 @@ When used, named Wrangler environments must include their own bindings where Wra
 | `command` | string | required | Exactly `preview` or `up`; other commands fail validation |
 | `stack` | string | required | Fully qualified stack, e.g. `favouranifowose/site/prod` |
 | `working-directory` | string | `.` | `Pulumi.yaml`, package and lockfile directory |
-| `environment` | string | empty | Required for `up`; preview uses GitHub environment `preview` if omitted |
+| `environment` | string | empty | Optional GitHub environment for either command; empty uses jobs with no environment reference |
 
 | Secret | Required | Meaning |
 | --- | --- | --- |
@@ -78,16 +82,16 @@ The composite action installs Bun without an executable cache. If a registry tok
 
 ## App caller example
 
-Save as `.github/workflows/delivery.yml` in a SvelteKit app with its Pulumi project in `infra/`. Replace `site` in the stack name. CI runs for forks; credential-bearing jobs only run for same-repository PRs or pushes to `main`. Never switch this to `pull_request_target` or run untrusted fork code with deployment credentials. Same-repository PRs are trusted code and must be reviewed accordingly.
+Save as `.github/workflows/delivery.yml` in a SvelteKit app with its Pulumi project in `infra/`. Replace `site` in the stack name. Store credentials in repository secrets and grant the repository Actions access to the private infra package. Every push to `main` runs CI, then `pulumi up`, then the Worker deployment; there is no manual approval step.
 
-Provision the `preview` and `production` GitHub environments with Pulumi before using this caller. **Production must require Favour's approval, prevent self-review, and allow deployments only from `main`.** Merely naming an environment does not create an approval rule. Scope preview credentials to preview resources; configure infrastructure credentials separately where their required scope differs from Worker credentials. The example uses the same secret names in each selected environment. Supply required secrets through organization/repository secrets or explicit mappings; use environment-scoped values for deployment overrides.
+The PR trigger and preview jobs below are optional: remove them if previews are not needed. CI runs for fork PRs; credential-bearing preview jobs run only for same-repository PRs. Never switch this to `pull_request_target` or run untrusted fork code with deployment credentials. Same-repository PRs execute trusted code. Use separately scoped preview credentials and isolated bindings where needed.
 
 ```yaml
 name: Delivery
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request: # Optional: remove this trigger and the two preview jobs below.
 
 permissions: {}
 
@@ -98,6 +102,37 @@ jobs:
       packages: read
     uses: favouranifowose/.github/.github/workflows/ci.yml@v1
 
+  infra-up:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ci
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: write
+    uses: favouranifowose/.github/.github/workflows/pulumi.yml@v1
+    with:
+      command: up
+      stack: favouranifowose/site/prod
+      working-directory: infra
+    secrets:
+      PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GH_APP_ID: ${{ secrets.GH_APP_ID }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+  worker-production:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: infra-up
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: write
+    uses: favouranifowose/.github/.github/workflows/deploy-worker.yml@v1
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # Optional PR previews.
   infra-preview:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     needs: ci
@@ -110,7 +145,6 @@ jobs:
       command: preview
       stack: favouranifowose/site/prod
       working-directory: infra
-      environment: preview
     secrets:
       PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -126,51 +160,17 @@ jobs:
       pull-requests: write
     uses: favouranifowose/.github/.github/workflows/deploy-worker.yml@v1
     with:
-      environment: preview
       preview: true
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-  infra-up:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: ci
-    permissions:
-      contents: read
-      packages: read
-      pull-requests: write
-    uses: favouranifowose/.github/.github/workflows/pulumi.yml@v1
-    with:
-      command: up
-      stack: favouranifowose/site/prod
-      working-directory: infra
-      environment: production
-    secrets:
-      PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      GH_APP_ID: ${{ secrets.GH_APP_ID }}
-      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
-  worker-production:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: infra-up
-    permissions:
-      contents: read
-      packages: read
-      pull-requests: write
-    uses: favouranifowose/.github/.github/workflows/deploy-worker.yml@v1
-    with:
-      environment: production
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
-Only CI applies production changes; do not run `pulumi up` locally against production. This example runs infrastructure before Worker production deployment. Both jobs reference the protected production environment and can require separate approvals. An existing preview stack can instead be selected for `infra-preview`; a preview of the production stack only computes a plan and must have sufficient read access to production resources.
+Only CI applies production changes; do not run `pulumi up` locally against production. This example runs infrastructure before Worker production deployment, without referencing any GitHub environment. An existing preview stack can instead be selected for `infra-preview`; a preview of the production stack only computes a plan and must have sufficient read access to production resources. Callers grant PR write permission because the reusable workflows include preview/comment jobs; the production execution jobs narrow their own job permissions.
 
 ## Versioning and maintenance
 
-Callers pin `@v1`. Publish compatible releases with immutable `v1.x.y` tags, then the release workflow creates generated release notes and moves the lightweight `v1` tag to that commit. A breaking interface change requires a new major. The first reviewed release must be tagged before callers or the reusable workflows can resolve the shared `setup-bun@v1` action. No release tags are created as part of opening this repository's implementation PR.
+Callers pin `@v1`. Publish compatible releases with immutable `v1.x.y` tags, then the release workflow creates generated release notes and moves the lightweight `v1` tag to that commit. A breaking interface change requires a new major. The shared `setup-bun@v1` action follows the same supported major.
 
 Protect release tags and restrict who may publish them; allow the release job to update the moving major tag. Release tags should point to reviewed commits on `main`, and older release tags should not be pushed after newer ones because each release advances its major alias. Third-party actions are pinned to full commit SHAs with version comments. Renovate groups weekly GitHub Actions updates and preserves these digests; first-party references deliberately follow `@v1`. Enable the Renovate GitHub App for this repository to activate updates.
 
@@ -182,4 +182,4 @@ actionlint
 zizmor .
 ```
 
-The CI security check uses zizmor's regular persona (pedantic off) and fails on high-severity findings. Local `zizmor .` checks all severities by default. No Cloudflare or Pulumi credentials are needed to lint this repository. Live uploads, approval gates, Pulumi operations and releases require configured caller environments and are not exercised by these static checks.
+The CI security check uses zizmor's regular persona (pedantic off) and fails on high-severity findings. Local `zizmor .` checks all severities by default. No Cloudflare or Pulumi credentials are needed to lint this repository. Live uploads and Pulumi operations require caller credentials and are not exercised by these static checks.
