@@ -3,9 +3,13 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: GitHub environment and named Wrangler environment (production or preview).
+        description: GitHub environment for secrets and deployment approval (production or preview).
         type: string
         required: true
+      wrangler-environment:
+        description: Optional named Wrangler environment; empty uses the top-level configuration.
+        type: string
+        default: ''
       preview:
         description: Upload a preview version without changing the active deployment.
         type: boolean
@@ -37,8 +41,10 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      packages: read
     environment:
       name: ${{ inputs.environment }}
+      # wrangler-action maps versions upload's preview_url to deployment-url.
       url: ${{ steps.wrangler.outputs.deployment-url }}
     outputs:
       url: ${{ steps.wrangler.outputs.deployment-url }}
@@ -54,6 +60,7 @@ jobs:
         uses: favouranifowose/.github/actions/setup-bun@v1
         with:
           bun-version: ${{ inputs.bun-version }}
+          registry-token: ${{ github.token }}
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Build
@@ -65,7 +72,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ inputs.working-directory }}
-          environment: ${{ inputs.environment }}
+          environment: ${{ inputs.wrangler-environment }}
           packageManager: bun
           command: ${{ inputs.preview && 'versions upload' || 'deploy' }}
   comment:

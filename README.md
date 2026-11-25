@@ -4,9 +4,9 @@ Reusable CI/CD and organization defaults for `favouranifowose`. App repositories
 
 | Workflow | Behavior | GitHub token permissions |
 | --- | --- | --- |
-| `ci.yml` | Frozen install, `check`, `test`, optional `build` | `contents: read` |
-| `deploy-worker.yml` | Build, then `versions upload` for preview or `deploy` for production; one sticky PR comment per environment/directory | Deploy: `contents: read`; separate comment job: `pull-requests: write` |
-| `pulumi.yml` | Validate `preview`/`up`, frozen install, run Pulumi; preview posts a sticky PR summary | `contents: read`; preview job also gets `pull-requests: write` |
+| `ci.yml` | Frozen install, `check`, `test`, optional `build` | `contents: read`, `packages: read` |
+| `deploy-worker.yml` | Build, then `versions upload` for preview or `deploy` for production; one sticky PR comment per environment/directory | Deploy: `contents: read`, `packages: read`; separate comment job: `pull-requests: write` |
+| `pulumi.yml` | Validate `preview`/`up`, frozen install, run Pulumi; preview posts a sticky PR summary | Install jobs: `contents: read`, `packages: read`; preview also gets `pull-requests: write` |
 | `lint.yml` | On PRs and pushes to `main`, run actionlint and zizmor (regular persona, fail on high findings) | `contents: read` |
 | `release.yml` | On stable `vMAJOR.MINOR.PATCH` tags, create a release with generated notes and advance the major tag | Release job: `contents: write` |
 
@@ -22,13 +22,14 @@ All jobs have timeouts. CI supersedes older runs on the same ref; preview upload
 | `working-directory` | string | `.` | Package and lockfile directory |
 | `run-build` | boolean | `true` | Build after checks and tests |
 
-No secrets required. The package must provide noninteractive `check`, `test`, and (when enabled) `build` scripts and a committed `bun.lock`.
+No additional secrets required: installs authenticate to GitHub Packages with the job's `github.token`. Grant each caller repository Actions access to the private `@favouranifowose/infra` package in the package's settings; `packages: read` alone does not grant cross-repository access. The package must provide noninteractive `check`, `test`, and (when enabled) `build` scripts and a committed `bun.lock`.
 
 ### `deploy-worker.yml`
 
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `environment` | string | required | Both the GitHub environment and named Wrangler environment |
+| `environment` | string | required | GitHub environment for secrets and approval |
+| `wrangler-environment` | string | empty | Optional Wrangler `--env`; empty uses the top-level Wrangler configuration |
 | `preview` | boolean | `false` | Upload a version without switching active traffic |
 | `working-directory` | string | `.` | App and Wrangler configuration directory |
 | `bun-version` | string | `1.3.11` | Exact Bun version |
@@ -38,9 +39,9 @@ No secrets required. The package must provide noninteractive `check`, `test`, an
 | `CLOUDFLARE_API_TOKEN` | yes | Scoped token for this account/Worker and the deployment's required bindings |
 | `CLOUDFLARE_ACCOUNT_ID` | yes | Account owning the Worker |
 
-Use `@sveltejs/adapter-cloudflare`, commit Wrangler as a dev dependency with the lockfile, and configure `[env.preview]` and `[env.production]` (or the JSONC equivalents). `preview` should identify a separate Worker from production. Enable `workers_dev` and `preview_urls` for preview and ensure required bindings exist before uploading versions. The Wrangler action uses the installed Wrangler version; use Wrangler 3.88.0 or later so `versions upload` returns a structured preview URL. The comment job fails clearly if a Workers preview URL is missing.
+Use `@sveltejs/adapter-cloudflare` and commit Wrangler as a dev dependency with the lockfile. The GitHub `environment` does not select a Wrangler environment: leave `wrangler-environment` empty for apps with only a top-level `wrangler.jsonc`. Set it explicitly only when the app defines a matching named Wrangler environment. Enable `workers_dev` and `preview_urls` for version previews and ensure required bindings exist before uploading versions. The Wrangler action uses the installed Wrangler version; use Wrangler 3.88.0 or later so `versions upload` returns a structured preview URL. In pinned wrangler-action v4.1.3, `versions upload` exposes its `preview_url` as **`deployment-url`**, which feeds the GitHub environment URL and sticky PR comment; `preview-url` is for the separate `wrangler preview` command. See the pinned [action metadata](https://github.com/cloudflare/wrangler-action/blob/953926a2e2182532811c01a25e53647d93bf07c0/action.yml) and [version upload output handler](https://github.com/cloudflare/wrangler-action/blob/953926a2e2182532811c01a25e53647d93bf07c0/src/commandOutputParsing.ts). The comment job fails clearly if a Workers preview URL is missing.
 
-Named environments must include their own bindings where Wrangler does not inherit them. Match Worker names, routes and bindings to the infrastructure owned by Pulumi. The SvelteKit build must produce the entry point/assets configured for that environment. A version preview uses existing resources and may write to its bound databases or services; use isolated preview bindings. Environment secrets override explicitly passed secrets of the same name.
+When used, named Wrangler environments must include their own bindings where Wrangler does not inherit them. Match Worker names, routes and bindings to the infrastructure owned by Pulumi. The SvelteKit build must produce the configured entry point/assets. A version preview uploads without switching active traffic, but uses existing resources and may write to its bound databases or services; select an isolated preview Worker/bindings when that matters. Environment secrets override explicitly passed secrets of the same name. Worker and Pulumi installs use the same GitHub Packages authentication as CI.
 
 ### `pulumi.yml`
 
@@ -67,12 +68,12 @@ The Pulumi TypeScript project should select Bun in `Pulumi.yaml` (`runtime.name:
 | `bun-version` | `1.3.11` | Exact Bun version |
 | `registry-token` | empty | Optional token with GitHub Packages `read:packages` and access to the package |
 
-The composite action installs Bun without an executable cache. If a registry token is supplied, it appends the `@favouranifowose` GitHub Packages registry and authentication to the runner user's `.npmrc` with a restrictive creation mask. Use GitHub-hosted ephemeral runners; do not upload that file as an artifact. The reusable workflows do not request a package token; callers needing private packages can use the composite directly in their own jobs (with `packages: read` if using the job token).
+The composite action installs Bun without an executable cache. If a registry token is supplied, it appends the `@favouranifowose` GitHub Packages registry and authentication to the runner user's `.npmrc` with a restrictive creation mask. [Bun supports user-level `.npmrc` files and scoped registries](https://bun.sh/docs/pm/npmrc); no additional `bunfig.toml` is needed. All reusable jobs that install dependencies pass `github.token` and grant `packages: read`. Callers must also allow `packages: read` and have Actions access to each private package. Use GitHub-hosted ephemeral runners; do not upload `.npmrc` as an artifact. The composite can also be used directly:
 
 ```yaml
 - uses: favouranifowose/.github/actions/setup-bun@v1
   with:
-    registry-token: ${{ secrets.GITHUB_TOKEN }}
+    registry-token: ${{ github.token }}
 ```
 
 ## App caller example
@@ -94,6 +95,7 @@ jobs:
   ci:
     permissions:
       contents: read
+      packages: read
     uses: favouranifowose/.github/.github/workflows/ci.yml@v1
 
   infra-preview:
@@ -101,6 +103,7 @@ jobs:
     needs: ci
     permissions:
       contents: read
+      packages: read
       pull-requests: write
     uses: favouranifowose/.github/.github/workflows/pulumi.yml@v1
     with:
@@ -119,6 +122,7 @@ jobs:
     needs: ci
     permissions:
       contents: read
+      packages: read
       pull-requests: write
     uses: favouranifowose/.github/.github/workflows/deploy-worker.yml@v1
     with:
@@ -133,6 +137,7 @@ jobs:
     needs: ci
     permissions:
       contents: read
+      packages: read
       pull-requests: write
     uses: favouranifowose/.github/.github/workflows/pulumi.yml@v1
     with:
@@ -151,6 +156,7 @@ jobs:
     needs: infra-up
     permissions:
       contents: read
+      packages: read
       pull-requests: write
     uses: favouranifowose/.github/.github/workflows/deploy-worker.yml@v1
     with:

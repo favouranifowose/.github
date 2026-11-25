@@ -14,8 +14,7 @@ on:
         description: Run the build after checks and tests.
         type: boolean
         default: true
-permissions:
-  contents: read
+permissions: {}
 concurrency:
   group: shared-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
   cancel-in-progress: true
@@ -23,6 +22,9 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -35,6 +37,7 @@ jobs:
         uses: favouranifowose/.github/actions/setup-bun@v1
         with:
           bun-version: ${{ inputs.bun-version }}
+          registry-token: ${{ github.token }}
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Check
