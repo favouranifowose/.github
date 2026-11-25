@@ -183,3 +183,14 @@ zizmor .
 ```
 
 The CI security check uses zizmor's regular persona (pedantic off) and fails on high-severity findings. Local `zizmor .` checks all severities by default. No Cloudflare or Pulumi credentials are needed to lint this repository. Live uploads and Pulumi operations require caller credentials and are not exercised by these static checks.
+
+## Private packages (`@favouranifowose/*`)
+
+bun reads registry auth only from the project's own `.npmrc`, not `~/.npmrc`. Every repo that installs `@favouranifowose/*` commits this `.npmrc` next to its `package.json`:
+
+```ini
+@favouranifowose:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```
+
+The shared workflows set `NODE_AUTH_TOKEN` to the job's read-only `github.token`. Locally, run `NODE_AUTH_TOKEN=$(gh auth token) bun install`. The package must also grant the repo Actions access (package settings → Manage Actions access → Read).

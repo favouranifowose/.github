@@ -52,6 +52,10 @@ jobs:
   preview:
     needs: validate
     if: inputs.environment == '' && (inputs.command == 'preview' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
+    # bun only reads registry auth from the project's .npmrc, so callers' .npmrc files
+    # use //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}; this read-only token fills it.
+    env:
+      NODE_AUTH_TOKEN: ${{ github.token }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -108,6 +112,10 @@ jobs:
   preview-with-environment:
     needs: validate
     if: inputs.environment != '' && (inputs.command == 'preview' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
+    # bun only reads registry auth from the project's .npmrc, so callers' .npmrc files
+    # use //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}; this read-only token fills it.
+    env:
+      NODE_AUTH_TOKEN: ${{ github.token }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -165,6 +173,10 @@ jobs:
   up:
     needs: validate
     if: inputs.environment == '' && (inputs.command == 'up' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
+    # bun only reads registry auth from the project's .npmrc, so callers' .npmrc files
+    # use //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}; this read-only token fills it.
+    env:
+      NODE_AUTH_TOKEN: ${{ github.token }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -220,6 +232,10 @@ jobs:
   up-with-environment:
     needs: validate
     if: inputs.environment != '' && (inputs.command == 'up' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
+    # bun only reads registry auth from the project's .npmrc, so callers' .npmrc files
+    # use //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}; this read-only token fills it.
+    env:
+      NODE_AUTH_TOKEN: ${{ github.token }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

@@ -20,6 +20,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   ci:
+    # bun only reads registry auth from the project's .npmrc, so callers' .npmrc files
+    # use //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}; this read-only token fills it.
+    env:
+      NODE_AUTH_TOKEN: ${{ github.token }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
