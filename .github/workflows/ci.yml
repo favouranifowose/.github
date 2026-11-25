@@ -1,0 +1,49 @@
+name: CI
+on:
+  workflow_call:
+    inputs:
+      bun-version:
+        description: Exact Bun version.
+        type: string
+        default: '1.3.11'
+      working-directory:
+        description: Directory containing package.json and bun.lock.
+        type: string
+        default: '.'
+      run-build:
+        description: Run the build after checks and tests.
+        type: boolean
+        default: true
+permissions: {}
+concurrency:
+  group: shared-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
+  cancel-in-progress: true
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Bun
+        uses: favouranifowose/.github/actions/setup-bun@v1
+        with:
+          bun-version: ${{ inputs.bun-version }}
+          registry-token: ${{ github.token }}
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Check
+        run: bun run check
+      - name: Test
+        run: bun run test
+      - name: Build
+        if: inputs.run-build
+        run: bun run build

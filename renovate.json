@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "America/New_York",
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "excludePackageNames": ["favouranifowose/.github"],
+      "groupName": "GitHub Actions weekly"
+    },
+    {
+      "matchPackageNames": ["favouranifowose/.github"],
+      "enabled": false
+    }
+  ]
+}

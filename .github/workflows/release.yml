@@ -1,0 +1,39 @@
+name: Release workflows
+on:
+  push:
+    tags: ['v*.*.*']
+permissions: {}
+concurrency:
+  group: shared-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release and advance major tag
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const match = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(tag);
+            if (!match) throw new Error('Expected a stable vMAJOR.MINOR.PATCH tag');
+            const params = {...context.repo, tag_name: tag};
+            try {
+              await github.rest.repos.getReleaseByTag(params);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.repos.createRelease({...params, generate_release_notes: true});
+            }
+            // Resolve annotated tags to their commit before updating the lightweight major ref.
+            const {data: commit} = await github.rest.repos.getCommit({...context.repo, ref: tag});
+            const major = `tags/v${match[1]}`;
+            try {
+              await github.rest.git.getRef({...context.repo, ref: major});
+              await github.rest.git.updateRef({...context.repo, ref: major, sha: commit.sha, force: true});
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.git.createRef({...context.repo, ref: `refs/${major}`, sha: commit.sha});
+            }
