@@ -1,0 +1,160 @@
+name: Pulumi
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: Only preview or up is accepted; up requires an environment.
+        type: string
+        required: true
+      stack:
+        description: Fully qualified Pulumi stack, for example favouranifowose/site/prod.
+        type: string
+        required: true
+      working-directory:
+        description: Directory containing Pulumi.yaml, package.json and bun.lock.
+        type: string
+        default: '.'
+      environment:
+        description: GitHub environment; required for up, defaults to preview for preview.
+        type: string
+        default: ''
+    secrets:
+      PULUMI_ACCESS_TOKEN:
+        description: Pulumi Cloud token with access to the requested stack.
+        required: true
+      CLOUDFLARE_API_TOKEN:
+        description: Scoped Cloudflare token for the resources managed by this stack.
+        required: true
+      GH_APP_ID:
+        description: Optional GitHub App ID; must be paired with GH_APP_PRIVATE_KEY.
+        required: false
+      GH_APP_PRIVATE_KEY:
+        description: Optional private key for the GitHub provider App installation.
+        required: false
+permissions: {}
+concurrency:
+  # Serialize preview and up for the same stack; never cancel an infrastructure update.
+  group: shared-pulumi-${{ inputs.stack }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate command and approval environment
+        env:
+          COMMAND: ${{ inputs.command }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "$COMMAND" in
+            preview) ;;
+            up) test -n "${ENVIRONMENT//[[:space:]]/}" || { echo 'up requires an environment'; exit 1; } ;;
+            *) echo 'command must be preview or up'; exit 1 ;;
+          esac
+  preview:
+    needs: validate
+    if: inputs.command == 'preview' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    environment: ${{ inputs.environment || 'preview' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Bun
+        uses: favouranifowose/.github/actions/setup-bun@v1
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: bun install --frozen-lockfile
+      - name: Validate App credentials
+        id: credentials
+        env:
+          APP_ID: ${{ secrets.GH_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$APP_ID" && -z "$APP_PRIVATE_KEY" || -z "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo 'GH_APP_ID and GH_APP_PRIVATE_KEY must be provided together'
+            exit 1
+          fi
+          if [[ -n "$APP_ID" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create GitHub provider token
+        id: app-token
+        if: steps.credentials.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: write
+      - name: Run Pulumi
+        uses: pulumi/actions@0ce33695f880624d4f27bd6db25e680c7df4d551 # v7.2.0
+        with:
+          command: ${{ inputs.command }}
+          stack-name: ${{ inputs.stack }}
+          work-dir: ${{ inputs.working-directory }}
+          comment-on-pr: ${{ inputs.command == 'preview' }}
+          github-token: ${{ github.token }}
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+  up:
+    needs: validate
+    if: inputs.command == 'up' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Bun
+        uses: favouranifowose/.github/actions/setup-bun@v1
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: bun install --frozen-lockfile
+      - name: Validate App credentials
+        id: credentials
+        env:
+          APP_ID: ${{ secrets.GH_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$APP_ID" && -z "$APP_PRIVATE_KEY" || -z "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo 'GH_APP_ID and GH_APP_PRIVATE_KEY must be provided together'
+            exit 1
+          fi
+          if [[ -n "$APP_ID" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create GitHub provider token
+        id: app-token
+        if: steps.credentials.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: write
+      - name: Run Pulumi
+        uses: pulumi/actions@0ce33695f880624d4f27bd6db25e680c7df4d551 # v7.2.0
+        with:
+          command: ${{ inputs.command }}
+          stack-name: ${{ inputs.stack }}
+          work-dir: ${{ inputs.working-directory }}
+          comment-on-pr: ${{ inputs.command == 'preview' }}
+          github-token: ${{ github.token }}
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}

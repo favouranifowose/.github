@@ -1,0 +1,7 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # First-party composite follows the same supported major as its callers.
+        favouranifowose/.github/actions/setup-bun: ref-pin
+        '*': hash-pin
